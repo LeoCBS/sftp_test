@@ -2,125 +2,90 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"io/ioutil"
-	"log"
 	"net"
-	"os"
+	"strconv"
+	"testing"
 
-	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
-func main() {
-	startSftp()
+var sshServerDebugStream = ioutil.Discard
+
+var (
+	hostPrivateKeySigner ssh.Signer
+	privKey              = []byte(`
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAsSxU4LdH6sG/S5dlblfDntulWRI6m+weak1uBNNqriSSkG4g
+KohMCbHmJJY6a1cAv53GFCpWJoq7XYvDgPFb3XKqb7riAr65RFtFzM8sQsVQoqV8
+fknbIH16E72yMT5FceIbSM4/O3itOSlUY2vJ7BsEUjx7nDWaTP+OMFkwremo72Tq
+tUNgins3X8m00Y5sKRA5qLVHwR04ZbFy9nGN3hKEPH6CVMejqJJLOeV81TX/XBni
+CT6qMCmxYCdbgmGQROnDHUHSWNv17F0wb/0RMlQl0ymFHOSegtmdG2Xt9oYWYiDN
+Gy0K8GBoCtHVLZt3fL1vafksS/sM5RYRUAFSCQIDAQABAoIBAQCeDrCB8MBF3Cau
+ZxfkAoPP2p9+ANcsds8DgqQdxgYr6RCfrL8hcopzM7Pe++6OCAXw6+3j24kTxTw1
+zhPRmoCb5EnMd2pdjIx3QP3aIxCXWLQBBaU0fOrx5z7bEaZAbA9D87TnlKewhI30
+qrxQHb771XZbbv3Pc7p96paM52SYIJlvyUwQKCQNAZNqRDanR+efUWUlGWAXdY+x
+/cG2U/EKA/8HQNXCF2TDNGb97MN8/Bl0VRYpxdBqHQl2ozXkpgPa1vXNQEQ0cHVT
+JNYkI2vOQ3Iya3T1b6zx3opfiP7Y64ydpZu/mrU5oWMyikmdyX6wCpoMa0oyzRDZ
+ZTPYm1gJAoGBAN5Uo69O5Up/C9qIp8UtfnH9XFTRsTnfh6SlU9xpuKjbN5Kw1sHb
+DeXSt+Jzb3qeUMdg+98QoHAIy4oxsWjx9yfSjcm+EPpPtgJ8Wko+DJKQKmulo0/g
+epKFo7FSoWGqtH8fr3zf7/S8+bphDQHYlWRmH/mIsLpyBovLTvaJ1eBLAoGBAMwB
+BLu/iF+0l1rlnl9MN1rB7+5xxXGPoH4LUjI8PHCMimPW4WVwqCLCgNtlqx1zVK//
+L92MOuAn9PjLvw8sspC56Tdzba7HAIPLHK8AtU4IP8+be0Oexctsj57IGKIcXI+y
+YqFTptpVvEkPej+P9riX23qPh0Zuwtf2K69Fbup7AoGAW1FcYdb/6pdAISRb9Gr5
+Moyj7dqq9mBPcFrPlQp/ZCuWKdQkgT8d+DWSfZp4QV7hQuMc0MQdgaa7IynB+p7X
+qy2aOzCr/IPc+CxnUXMm6tP3+HryFw7WiXQGhgCwdFMPC9/RznKUNmugDuNp2kZB
+JhmkLHPuUsYe1jBNYInApP0CgYEAwWrVygw2iEb4mb3LAh+I/AuUKEbGJH1AdUDW
+lbp2s18Mdsxst3iwcQRol5s1OZ73VEZmY29pAs3ffWPvqbt/MaiSbXiLLYKQAmS4
+tVO+klVP6s5HeD042z36jVi5wjmRqMxApyRgtfFDqyF5jno4OZwBA5rBbw3kvk0v
+7eWu27ECgYBbQWJs4Z2w0HyrstJsInXlbRlR4J7L9JoE5h6sPZ3lOd+SN1ABgC5z
+VnCc5jd++chnB4rEN9wRCr5NBSc/yqYx18kCI8eiN+OjhcmwwYq3glur7mHgQ/YI
+33O4je+nAivvpHKW+rlB+K0NaESt547Iio41CD/03Q7P0Q5ufkuhQA==
+-----END RSA PRIVATE KEY-----
+`)
+)
+
+func init() {
+	var err error
+	hostPrivateKeySigner, err = ssh.ParsePrivateKey(privKey)
+	if err != nil {
+		panic(err)
+	}
 }
 
-func startSftp() {
-	config := createConfig()
-	listener, err := net.Listen("tcp", "0.0.0.0:2022")
+func getTestServer(t *testing.T) (net.Listener, string, int) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		log.Fatal("failed to listen for connection", err)
+		t.Fatal(err)
 	}
-	fmt.Printf("Listening on %v\n", listener.Addr())
-	handleConn(config)
-}
-
-func createConfig() *ssh.ServerConfig {
-	config := &ssh.ServerConfig{
-		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			fmt.Fprintf(os.Stderr, "Login: %s\n", c.User())
-			if c.User() == "testuser" && string(pass) == "tiger" {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("password rejected for %q", c.User())
-		},
-	}
-	privateBytes, err := ioutil.ReadFile("id_rsa")
+	host, portStr, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
-		log.Fatal("Failed to load private key", err)
+		t.Fatal(err)
 	}
-	private, err := ssh.ParsePrivateKey(privateBytes)
+	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		log.Fatal("Failed to parse private key", err)
+		t.Fatal(err)
 	}
-	config.AddHostKey(private)
-	return config
-}
-
-func getConns(listener net.Listener) chan net.Conn {
-	ch := make(chan net.Conn)
 	go func() {
-		nConn, err := listener.Accept()
-		if err != nil {
-			log.Fatal("failed to accept incoming connection", err)
-		}
-		ch <- nConn
-	}()
-	fmt.Print("getConns")
-	return ch
-}
-
-func handleConn(config *ssh.ServerConfig) {
-	nConn := getConns(listener)
-
-	fmt.Print("handleConn 2")
-	_, chans, reqs, err := ssh.NewServerConn(nConn, config)
-	if err != nil {
-		log.Fatal("failed to handshake", err)
-	}
-	fmt.Fprintf(os.Stderr, "SSH server established\n")
-
-	go ssh.DiscardRequests(reqs)
-
-	for newChannel := range chans {
-		fmt.Fprintf(os.Stderr, "Incoming channel: %s\n", newChannel.ChannelType())
-		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
-			fmt.Fprintf(os.Stderr, "Unknown channel type: %s\n", newChannel.ChannelType())
-			continue
-		}
-		channel, requests, err := newChannel.Accept()
-		if err != nil {
-			log.Fatal("could not accept channel.", err)
-		}
-		fmt.Fprintf(os.Stderr, "Channel accepted\n")
-
-		go func(in <-chan *ssh.Request) {
-			for req := range in {
-				fmt.Fprintf(os.Stderr, "Request: %v\n", req.Type)
-				ok := false
-				switch req.Type {
-				case "subsystem":
-					fmt.Fprintf(os.Stderr, "Subsystem: %s\n", req.Payload[4:])
-					if string(req.Payload[4:]) == "sftp" {
-						ok = true
-					}
-				}
-				fmt.Fprintf(os.Stderr, " - accepted: %v\n", ok)
-				req.Reply(ok, nil)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				fmt.Fprintf(sshServerDebugStream, "ssh server socket closed: %v\n", err)
+				break
 			}
-		}(requests)
 
-		serverOptions := []sftp.ServerOption{
-			sftp.WithDebug(os.Stderr),
+			go func() {
+				defer conn.Close()
+				sshSvr, err := sshServerFromConn(conn, useSubsystem, basicServerConfig())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				err = sshSvr.Wait()
+				fmt.Fprintf(sshServerDebugStream, "ssh server finished, err: %v\n", err)
+			}()
 		}
+	}()
 
-		serverOptions = append(serverOptions, sftp.ReadOnly())
-		fmt.Fprintf(os.Stderr, "Read-only server\n")
-
-		server, err := sftp.NewServer(
-			channel,
-			serverOptions...,
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := server.Serve(); err == io.EOF {
-			server.Close()
-			log.Print("sftp client exited session.")
-		} else if err != nil {
-			log.Fatal("sftp server completed with error:", err)
-		}
-	}
+	return listener, host, port
 }
