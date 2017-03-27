@@ -93,7 +93,6 @@ func (svr *sshServer) handleChanReq(chanReq ssh.NewChannel) {
 }
 
 func (chsvr *sshSessionChannelServer) handle() {
-	// should maybe do something here...
 	go chsvr.handleReqs()
 }
 
